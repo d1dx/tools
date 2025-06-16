@@ -30,4 +30,4 @@ def generate_combined_formula_no_spaces_with_comma_check(x, output_file):
         file.write(combined_formula)
 
 # Example usage (for testing, DO NOT RUN):
-# generate_combined_formula_no_spaces_with_comma_check(3, "output_with_comma_check.txt")
+# generate_combined_formula_no_spaces_with_comma_check(3, "output.txt")
