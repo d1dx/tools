@@ -1,0 +1,109 @@
+/**
+ * Airtable Automation Script
+ * Trigger:  When a Group’s “Record ID (from Moods) – Bubble Sync Bridge” field is updated.
+ * Purpose:  Parse the CSV of Moods record IDs, find matching Users by their "Record ID (Moods)",
+ *           then override the “Users” link field on the Group with exactly those matches.
+ */
+
+(async () => {
+    // --------------------------------------------------------------------------------
+    // 1) CONFIGURE TABLES / FIELD IDS
+    // --------------------------------------------------------------------------------
+
+    // Table objects
+    const groupsTable = base.getTable('Groups');
+    const usersTable  = base.getTable('Users');
+
+    // Field IDs in the Groups table
+    const BRIDGE_FIELD_ID = 'fldL0R6SHFA4nihaS';  // "Record ID (from Moods) – Bubble Sync Bridge"
+    const USERS_LINK_FIELD_ID = 'fldxQQQWVDwefvuk0';  // "Users" (multipleRecordLinks)
+
+    // Field ID in the Users table
+    const USER_MOODS_ID_FIELD_ID = 'fldOgfrPcqZhJFZwF';  // "Record ID (Moods)"
+
+    // --------------------------------------------------------------------------------
+    // 2) GET THE TRIGGERING GROUP RECORD
+    // --------------------------------------------------------------------------------
+
+    // `recordId` is automatically provided by the Airtable Automation trigger
+    const inputConfig = input.config();
+    const groupRecordId = inputConfig.recordId;
+
+    if (!groupRecordId) {
+        throw new Error("Script was triggered without a recordId. Make sure the automation passes recordId.");
+    }
+
+    // Fetch the triggering Group record, including its bridge field
+    const groupRecord = await groupsTable.selectRecordAsync(groupRecordId, {
+        fields: [BRIDGE_FIELD_ID]
+    });
+
+    if (!groupRecord) {
+        // In theory this shouldn't happen if recordId is valid
+        throw new Error(`Could not find Group record with ID ${groupRecordId}`);
+    }
+
+    // --------------------------------------------------------------------------------
+    // 3) READ + PARSE THE BRIDGE FIELD
+    // --------------------------------------------------------------------------------
+
+    // The bridge field is a singleLineText containing IDs separated by ", "
+    const rawBridgeString = groupRecord.getCellValueAsString(BRIDGE_FIELD_ID).trim();
+    // Note: getCellValueAsString(...) will return "" if field is null or empty
+
+    // If the bridge is blank/empty, we must clear all linked Users
+    if (rawBridgeString === "") {
+        await groupsTable.updateRecordAsync(groupRecordId, {
+            [USERS_LINK_FIELD_ID]: []
+        });
+        return;
+    }
+
+    // Split on comma + space, then trim each ID
+    const bridgeIds = rawBridgeString
+        .split(',')
+        .map(id => id.trim())
+        .filter(id => id.length > 0);
+
+    if (bridgeIds.length === 0) {
+        // Edge: if string was ", , ", treat it as empty
+        await groupsTable.updateRecordAsync(groupRecordId, {
+            [USERS_LINK_FIELD_ID]: []
+        });
+        return;
+    }
+
+    // --------------------------------------------------------------------------------
+    // 4) LOAD ALL USERS AND FILTER BY MATCHING "Record ID (Moods)"
+    // --------------------------------------------------------------------------------
+
+    // Fetch all Users with their "Record ID (Moods)" field
+    // (We only need to read USER_MOODS_ID_FIELD_ID for matching.)
+    const usersQueryResult = await usersTable.selectRecordsAsync({
+        fields: [USER_MOODS_ID_FIELD_ID]
+    });
+
+    // Build a Set for faster lookup
+    const desiredIdsSet = new Set(bridgeIds);
+
+    // Collect all Airtable record IDs of Users whose "Record ID (Moods)" exactly matches one of the bridge IDs
+    const matchedUserRecordIds = [];
+    for (let userRecord of usersQueryResult.records) {
+        const userMoodsText = userRecord.getCellValueAsString(USER_MOODS_ID_FIELD_ID).trim();
+        // If the user’s "Record ID (Moods)" exactly equals one of our bridge IDs → match
+        if (desiredIdsSet.has(userMoodsText)) {
+            matchedUserRecordIds.push(userRecord.id);
+        }
+    }
+
+    // --------------------------------------------------------------------------------
+    // 5) UPDATE THE GROUP’S "Users" LINK FIELD
+    // --------------------------------------------------------------------------------
+
+    // Overwrite the entire Users field. If no matches found, this array will be empty → clears links.
+    await groupsTable.updateRecordAsync(groupRecordId, {
+        [USERS_LINK_FIELD_ID]: matchedUserRecordIds.map(recId => ({ id: recId }))
+    });
+
+    // Done.
+})();
